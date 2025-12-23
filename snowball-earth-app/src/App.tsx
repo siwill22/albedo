@@ -74,6 +74,18 @@ function App() {
   const data = useMemo(() => {
     const ebm = ebmRef.current;
     const d = [];
+
+    // Add South Pole (-90) for visual completeness
+    d.push({
+      lat: -90,
+      temp: ebm.T[0],
+      albedo: ebm.albedo[0],
+      asr: ebm.ASR[0],
+      olr: ebm.OLR[0],
+      freezing: ebm.params.iceThreshold,
+      transport: ebm.transport[0]
+    });
+
     for (let i = 0; i < ebm.size; i++) {
       d.push({
         lat: ebm.lat[i],
@@ -85,6 +97,18 @@ function App() {
         transport: ebm.transport[i]
       });
     }
+
+    // Add North Pole (90)
+    d.push({
+      lat: 90,
+      temp: ebm.T[ebm.size - 1],
+      albedo: ebm.albedo[ebm.size - 1],
+      asr: ebm.ASR[ebm.size - 1],
+      olr: ebm.OLR[ebm.size - 1],
+      freezing: ebm.params.iceThreshold,
+      transport: ebm.transport[ebm.size - 1]
+    });
+
     return d;
   }, [generation]);
 
