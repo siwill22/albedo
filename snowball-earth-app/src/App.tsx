@@ -1,5 +1,5 @@
 
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, LineChart, Line } from 'recharts';
 import { Play, Pause, RotateCcw, Thermometer, Sun, CloudFog, AlertTriangle } from 'lucide-react';
 import { EBM, DEFAULT_PARAMS } from './engine/ebm';
@@ -10,7 +10,25 @@ function App() {
   // Simulation State
   const ebmRef = useRef<EBM>(new EBM(90, DEFAULT_PARAMS));
   const [isRunning, setIsRunning] = useState(false);
+  const isRunningRef = useRef(false);
   const [generation, setGeneration] = useState(0); // To trigger re-renders
+  const generationRef = useRef(0); // Track generation for limit check
+  const equilibriumStartTimeRef = useRef<number | null>(null);
+  const MAX_GENERATIONS = 2000;
+
+  // Object Pool for Chart Data (Persistent memory)
+  interface ChartData {
+    lat: number;
+    temp: number;
+    albedo: number;
+    asr: number;
+    olr: number;
+    freezing: number;
+    transport: number;
+  }
+
+
+  const [data, setData] = useState<ChartData[]>([]);
 
   // Parameter State
   const [solarMultiplier, setSolarMultiplier] = useState(1.0);
@@ -20,21 +38,110 @@ function App() {
   // Let's define: A_eff = A - forcing.
   // We'll trust the user interface "CO2" means warming.
 
+  // Sync chart data - create NEW objects (immutable)
+  const syncChartData = useCallback(() => {
+    const ebm = ebmRef.current;
+    const newData: ChartData[] = [];
+
+    // South Pole
+    newData.push({
+      lat: -90,
+      temp: ebm.T[0],
+      albedo: ebm.albedo[0],
+      asr: ebm.ASR[0],
+      olr: ebm.OLR[0],
+      freezing: ebm.params.iceThreshold,
+      transport: ebm.transport[0]
+    });
+
+    // Grid
+    for (let i = 0; i < ebm.size; i++) {
+      newData.push({
+        lat: ebm.lat[i],
+        temp: ebm.T[i],
+        albedo: ebm.albedo[i],
+        asr: ebm.ASR[i],
+        olr: ebm.OLR[i],
+        freezing: ebm.params.iceThreshold,
+        transport: ebm.transport[i]
+      });
+    }
+
+    // North Pole
+    newData.push({
+      lat: 90,
+      temp: ebm.T[ebm.size - 1],
+      albedo: ebm.albedo[ebm.size - 1],
+      asr: ebm.ASR[ebm.size - 1],
+      olr: ebm.OLR[ebm.size - 1],
+      freezing: ebm.params.iceThreshold,
+      transport: ebm.transport[ebm.size - 1]
+    });
+
+    setData(newData);
+  }, []);
+
+  const handleReset = useCallback(() => {
+    ebmRef.current = new EBM(90, DEFAULT_PARAMS);
+    setSolarMultiplier(1.0);
+    setCo2Multiplier(1.0);
+    setGeneration(0);
+    generationRef.current = 0;
+    setIsRunning(false);
+    isRunningRef.current = false;
+    equilibriumStartTimeRef.current = null;
+  }, []);
+
   // Loop
   useEffect(() => {
     let animationFrameId: number;
-    const loop = () => {
+    let lastRenderTime = 0;
+
+    const loop = (time: number) => {
       if (isRunning) {
-        // Run physics steps
-        // multiple sub-steps for stability and speed
-        for (let i = 0; i < 5; i++) {
+        // Check generation limit using ref (not stale closure)
+        if (generationRef.current >= MAX_GENERATIONS) {
+          console.warn('Max generations reached. Auto-resetting...');
+          handleReset();
+          return;
+        }
+
+        // Run physics steps (reduced from 5 to 2-3 for slower, more perceptible changes)
+        for (let i = 0; i < 2; i++) {
           ebmRef.current.step(0.05);
         }
-        setGeneration(g => g + 1);
+
+        // Check if in equilibrium
+        const globalNetFlux = ebmRef.current.getGlobalMeanNetFlux();
+        const isInEquilibrium = Math.abs(globalNetFlux) < 1;
+
+        if (isInEquilibrium) {
+          if (equilibriumStartTimeRef.current === null) {
+            equilibriumStartTimeRef.current = time;
+          } else if (time - equilibriumStartTimeRef.current > 1000) {
+            // Been in equilibrium for 1 second - auto-pause
+            console.log('Equilibrium reached. Auto-pausing...');
+            setIsRunning(false);
+            equilibriumStartTimeRef.current = null;
+            return;
+          }
+        } else {
+          equilibriumStartTimeRef.current = null;
+        }
+
+        // Throttle UI updates to ~15FPS (66ms)
+        if (time - lastRenderTime > 66) {
+          syncChartData();
+          generationRef.current += 1;
+          setGeneration(g => g + 1);
+          lastRenderTime = time;
+        }
+        animationFrameId = requestAnimationFrame(loop);
+      } else {
+        animationFrameId = requestAnimationFrame(loop);
       }
-      animationFrameId = requestAnimationFrame(loop);
     };
-    loop();
+    animationFrameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animationFrameId);
   }, [isRunning]);
 
@@ -43,6 +150,7 @@ function App() {
     const ebm = ebmRef.current;
     // S0
     ebm.params.S0 = DEFAULT_PARAMS.S0 * solarMultiplier;
+    ebm.computeInsolation(); // Recompute only when S0 changes
 
     // CO2 Effect:
     // We model CO2 increase as a reduction in A (the constant term in OLR A+BT).
@@ -59,58 +167,36 @@ function App() {
     ebm.params.A = DEFAULT_PARAMS.A - (co2Multiplier - 1) * 30;
 
     ebm.updateDiagnostics();
-    if (!isRunning) setGeneration(g => g + 1);
-  }, [solarMultiplier, co2Multiplier, isRunning]);
+    // When paused, we still need to update certain diagnostics and REFRESH THE CURVES
+    if (!isRunningRef.current) {
+      setGeneration(g => g + 1);
+      syncChartData();
+    }
+    // Reset equilibrium timer when parameters change
+    equilibriumStartTimeRef.current = null;
 
-  const handleReset = () => {
-    ebmRef.current = new EBM(90, DEFAULT_PARAMS);
-    setSolarMultiplier(1.0);
-    setCo2Multiplier(1.0);
-    setGeneration(g => g + 1);
-    setIsRunning(false);
-  };
+    // Auto-resume when sliders change (but not on initial load)
+    if (!isRunningRef.current && generationRef.current > 0) {
+      setIsRunning(true);
+      isRunningRef.current = true;
+    }
+  }, [solarMultiplier, co2Multiplier, syncChartData]);
+
+  // Keep ref synchronized with state
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
+  // Initial Data Sync (to ensure curves appear on load)
+  useEffect(() => {
+    syncChartData();
+  }, [syncChartData]);
+
+
 
   // Prepare Data for Charts
-  const data = useMemo(() => {
-    const ebm = ebmRef.current;
-    const d = [];
+  // Data handling moved to render loop for performance
 
-    // Add South Pole (-90) for visual completeness
-    d.push({
-      lat: -90,
-      temp: ebm.T[0],
-      albedo: ebm.albedo[0],
-      asr: ebm.ASR[0],
-      olr: ebm.OLR[0],
-      freezing: ebm.params.iceThreshold,
-      transport: ebm.transport[0]
-    });
-
-    for (let i = 0; i < ebm.size; i++) {
-      d.push({
-        lat: ebm.lat[i],
-        temp: ebm.T[i],
-        albedo: ebm.albedo[i],
-        asr: ebm.ASR[i],
-        olr: ebm.OLR[i],
-        freezing: ebm.params.iceThreshold,
-        transport: ebm.transport[i]
-      });
-    }
-
-    // Add North Pole (90)
-    d.push({
-      lat: 90,
-      temp: ebm.T[ebm.size - 1],
-      albedo: ebm.albedo[ebm.size - 1],
-      asr: ebm.ASR[ebm.size - 1],
-      olr: ebm.OLR[ebm.size - 1],
-      freezing: ebm.params.iceThreshold,
-      transport: ebm.transport[ebm.size - 1]
-    });
-
-    return d;
-  }, [generation]);
 
   const globalTemp = ebmRef.current.getGlobalMeanTemp();
   const getClimateState = (temp: number) => {

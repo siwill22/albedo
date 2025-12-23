@@ -142,7 +142,9 @@ export class EBM {
   }
 
   updateDiagnostics() {
-    this.computeInsolation(); // In case S0 changes
+    // computeInsolation is expensive and static (unless S0 changes). 
+    // It is now called explicitly by external controller when Parameters change.
+
     this.computeAlbedo();
 
     for (let i = 0; i < this.size; i++) {
