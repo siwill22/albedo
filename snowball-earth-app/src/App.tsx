@@ -15,7 +15,7 @@ function App() {
   const generationRef = useRef(0); // Track generation for limit check
   const equilibriumStartTimeRef = useRef<number | null>(null);
   const [maxGenerationsReached, setMaxGenerationsReached] = useState(false);
-  const MAX_GENERATIONS = 1000;
+  const MAX_GENERATIONS = 2500;
 
   // Object Pool for Chart Data (Persistent memory)
   interface ChartData {
