@@ -14,7 +14,8 @@ function App() {
   const [generation, setGeneration] = useState(0); // To trigger re-renders
   const generationRef = useRef(0); // Track generation for limit check
   const equilibriumStartTimeRef = useRef<number | null>(null);
-  const MAX_GENERATIONS = 2000;
+  const [maxGenerationsReached, setMaxGenerationsReached] = useState(false);
+  const MAX_GENERATIONS = 1000;
 
   // Object Pool for Chart Data (Persistent memory)
   interface ChartData {
@@ -82,6 +83,7 @@ function App() {
   }, []);
 
   const handleReset = useCallback(() => {
+    // Create new EBM instance to free old memory
     ebmRef.current = new EBM(90, DEFAULT_PARAMS);
     setSolarMultiplier(1.0);
     setCo2Multiplier(1.0);
@@ -89,8 +91,10 @@ function App() {
     generationRef.current = 0;
     setIsRunning(false);
     isRunningRef.current = false;
+    setMaxGenerationsReached(false);
     equilibriumStartTimeRef.current = null;
-  }, []);
+    syncChartData(); // Refresh display
+  }, [syncChartData]);
 
   // Loop
   useEffect(() => {
@@ -98,11 +102,13 @@ function App() {
     let lastRenderTime = 0;
 
     const loop = (time: number) => {
-      if (isRunning) {
+      if (isRunning && !maxGenerationsReached) {
         // Check generation limit using ref (not stale closure)
         if (generationRef.current >= MAX_GENERATIONS) {
-          console.warn('Max generations reached. Auto-resetting...');
-          handleReset();
+          console.warn('Max generations reached. Stopping simulation...');
+          setIsRunning(false);
+          isRunningRef.current = false;
+          setMaxGenerationsReached(true);
           return;
         }
 
@@ -143,7 +149,7 @@ function App() {
     };
     animationFrameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isRunning]);
+  }, [isRunning, maxGenerationsReached, handleReset]);
 
   // Sync Parameters
   useEffect(() => {
@@ -237,6 +243,19 @@ function App() {
             <span>Out of Equilibrium ({globalNetFlux.toFixed(1)} W/m²)</span>
           </div>
 
+          {/* Max Generations Warning */}
+          {maxGenerationsReached && (
+            <div style={{ marginTop: '10px', padding: '12px', background: '#ef444420', border: '1px solid #ef4444', borderRadius: '6px', color: '#fca5a5', fontSize: '0.9em' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold', marginBottom: '5px' }}>
+                <AlertTriangle size={16} />
+                <span>Maximum Generations Reached</span>
+              </div>
+              <div style={{ fontSize: '0.85em', color: '#f87171' }}>
+                Simulation stopped at {MAX_GENERATIONS} generations to prevent memory issues. Click Reset to start again.
+              </div>
+            </div>
+          )}
+
           {/* Debug Overlay */}
           <div style={{ marginTop: '15px', padding: '10px', background: '#00000040', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7em', color: '#64748b' }}>
             <div>Gen: {generation}</div>
@@ -290,7 +309,19 @@ function App() {
         </div>
 
         <div className="actions" style={{ marginTop: 'auto', display: 'flex', gap: '10px' }}>
-          <button onClick={() => setIsRunning(!isRunning)} style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px' }}>
+          <button
+            onClick={() => !maxGenerationsReached && setIsRunning(!isRunning)}
+            disabled={maxGenerationsReached}
+            style={{
+              flex: 1,
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '5px',
+              opacity: maxGenerationsReached ? 0.5 : 1,
+              cursor: maxGenerationsReached ? 'not-allowed' : 'pointer'
+            }}
+          >
             {isRunning ? <><Pause size={18} /> Pause</> : <><Play size={18} /> Play</>}
           </button>
           <button onClick={handleReset} style={{ background: '#ef444420', color: '#fca5a5' }}>
